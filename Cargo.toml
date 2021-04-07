@@ -1,0 +1,9 @@
+[package]
+name = "listener"
+version = "0.1.0"
+authors = ["ake"]
+edition = "2018"
+
+[dependencies]
+portaudio = "0.7.0"
+wav = "0.6.0"
