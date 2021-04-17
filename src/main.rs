@@ -6,6 +6,7 @@ extern crate portaudio;
 
 use std::time::{Duration, Instant};
 use std::thread::sleep;
+use std::sync::mpsc::channel;
 
 extern crate hound;
 use hound::WavWriter;
@@ -40,16 +41,16 @@ fn main() {
         Err(error) => panic!("{}", error.to_string()),
     };
 
-    let callback = move |portaudio::InputStreamCallbackArgs { buffer, .. }| {
-        for &sample in buffer.iter() {
-            wav_writer.write_sample(sample).ok();
-        }
+    let (sender, receiver) = channel();
 
+    let callback = move |portaudio::InputStreamCallbackArgs { buffer, .. }| {
+        sender.send(buffer).unwrap();
         portaudio::Continue
     };
 
     // Construct a stream with input and output sample types of i32
-    let mut stream = match audio_port.open_non_blocking_stream(input_settings, callback) {
+    let mut stream = match audio_port.open_non_blocking_stream(input_settings,
+                                                               callback) {
         Ok(strm) => strm,
         Err(error) => panic!("{}", error.to_string()),
     };
@@ -63,8 +64,10 @@ fn main() {
 
     let time_to_wait = &(5 as u64);
     while start.elapsed().as_secs().lt(time_to_wait) {
-        sleep(Duration::new(1, 0));
-        println!("{}[s] passed", start.elapsed().as_secs() );
+        let recv_data = receiver.recv().unwrap();
+        for sample in recv_data.iter() {
+            wav_writer.write_sample(*sample).ok();
+        }
     }
 
     match close_stream(stream){
