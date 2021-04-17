@@ -1,100 +1,142 @@
+//! A demonstration of recording to wav an input stream
+//!
+//! Audio from the default input device is stored in to a wav file
+
 extern crate portaudio;
-use portaudio as pa;
-use hound;
 
-use std::{thread, time};
-use std::sync::mpsc::channel;
-use std::sync::mpsc::{Sender, Receiver};
+use std::time::{Duration, Instant};
+use std::thread::sleep;
 
-const NUM_SECONDS: u64 = 3;
+extern crate hound;
+use hound::WavWriter;
+
+use std::fs;
+use std::io;
+use std::mem;
 
 fn main() {
-    let port_audio = match pa::PortAudio::new() {
-        Ok(pa) => pa,
-        Err(e) => {
-            eprintln!("Example failed with the following: {:?}", e);
-            return ();
+    const CHANNELS: i32 = 2;
+    const SAMPLE_RATE: f64 = 16_000.0;
+    const FRAMES: u32 = 256;
+
+    let audio_port = match open_audio_port() {
+        Ok(port) => port,
+        Err(error) => panic!("{}", String::from(error))
+    };
+
+    let input_index = match get_input_device_index(&audio_port) {
+        Ok(index) => index,
+        Err(error) => panic!("{}", String::from(error))
+    };
+
+    let input_settings = match get_input_settings(input_index, &audio_port, SAMPLE_RATE, FRAMES, CHANNELS) {
+        Ok(settings) => settings,
+        Err(error) => panic!("{}", String::from(error))
+    };
+
+    let mut wav_writer = match get_wav_writer("recorded.wav", CHANNELS,
+                                              SAMPLE_RATE) {
+        Ok(writer) => writer,
+        Err(error) => panic!("{}", error.to_string()),
+    };
+
+    let callback = move |portaudio::InputStreamCallbackArgs { buffer, .. }| {
+        for &sample in buffer.iter() {
+            wav_writer.write_sample(sample).ok();
         }
+
+        portaudio::Continue
     };
 
-    match print_inputs(&port_audio) {
-        Ok(_) => {},
-        e => eprintln!("Example failed with the following: {:?}", e)
+    // Construct a stream with input and output sample types of i32
+    let mut stream = match audio_port.open_non_blocking_stream(input_settings, callback) {
+        Ok(strm) => strm,
+        Err(error) => panic!("{}", error.to_string()),
     };
 
-    let (sender, receiver) : (Sender<&[i16]>, Receiver<&[i16]>) = channel();
-    let mut stream = match record(port_audio, sender) {
-        Ok(s) => s,
-        Err(e) => {
-            println!("ERROR STARTING RECORDING {:?}", e);
-            return ();
-        }
+    match stream.start() {
+        Ok(_) => {}
+        Err(error) => panic!("{}", error.to_string()),
     };
 
+    let start = Instant::now();
 
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: 16000,
-        bits_per_sample: 16,
+    let time_to_wait = &(5 as u64);
+    while start.elapsed().as_secs().lt(time_to_wait) {
+        sleep(Duration::new(1, 0));
+        println!("{}[s] passed", start.elapsed().as_secs() );
+    }
+
+    match close_stream(stream){
+        Ok(_) => {}
+        Err(error) => panic!("{}", error.to_string()),
+    };
+}
+
+fn get_wav_writer(path: &'static str, channels: i32, sample_rate: f64) -> Result<WavWriter<io::BufWriter<fs::File>>,String> {
+    let spec = wav_spec(channels, sample_rate);
+    match hound::WavWriter::create(path, spec) {
+        Ok(writer) => Ok(writer),
+        Err(error) => Err (String::from(format!("{}",error))),
+    }
+}
+
+fn wav_spec(channels: i32, sample_rate: f64) -> hound::WavSpec {
+    hound::WavSpec {
+        channels: channels as _,
+        sample_rate: sample_rate as _,
+        bits_per_sample: (mem::size_of::<i16>() * 8) as _,
         sample_format: hound::SampleFormat::Int,
-    };
-
-    let mut writer = hound::WavWriter::create("out.wav", spec).unwrap();
-
-    let start = time::Instant::now();
-    while start.elapsed() < time::Duration::new(NUM_SECONDS, 0) {
-        match  receiver.try_recv() {
-            Ok(buff) => {
-                //mean(buff);
-                for sample in buff.iter() {
-                    writer.write_sample(*sample).unwrap();
-                }
-            },
-            Err(_) => {}
-        }
-        thread::sleep(time::Duration::new(0, 100000));
     }
-    writer.finalize().unwrap();
-    stream.close().unwrap();
 }
 
-
-fn print_inputs(pa: &pa::PortAudio) -> Result<(), pa::Error> {
-
-    let num_devices = pa.device_count()?;
-    println!("Number of devices = {}", num_devices);
-
-    println!("Default input device: {:?}", pa.default_input_device());
-    println!("Input devices:");
-    for device in pa.devices()? {
-        let (_, info) = device?;
-        let in_channels = info.max_input_channels;
-        if in_channels > 0 {
-            println!("- Device {}", info.name);
-        }
+fn close_stream(mut stream: portaudio::Stream<portaudio::NonBlocking, portaudio::Input<i16>>) -> Result<String, String> {
+    match stream.stop() {
+        Ok(_) => {
+            Ok(String::from("Stream closed"))
+        },
+        Err(error) => {
+            Err(error.to_string())
+        },
     }
-    Ok(())
 }
 
+fn open_audio_port() -> Result<portaudio::PortAudio, String>
+{
+    portaudio::PortAudio::new().or_else(|error| Err(String::from(format!("{}", error))))
+}
 
-const CHANNELS: i32 = 1;
-const SAMPLE_RATE: f64 = 16000.0;
-const FRAMES_PER_BUFFER: u32 = 4096;
+fn get_input_device_index(audio_port: &portaudio::PortAudio) -> Result<portaudio::DeviceIndex, String>
+{
+    audio_port.default_input_device().or_else(|error| Err(String::from(format!("{}", error))))
+}
 
+fn get_input_latency(audio_port: &portaudio::PortAudio, input_index: portaudio::DeviceIndex) -> Result<f64, String>
+{
+    let input_device_information = audio_port.device_info(input_index).or_else(|error| Err(String::from(format!("{}", error))));
+    Ok(input_device_information.unwrap().default_low_input_latency)
+}
 
-fn record(pa: pa::PortAudio, sender : Sender<&'static [i16]>) ->
-        Result<pa::Stream<pa::NonBlocking, pa::Input<i16>>, pa::Error> {
-    let settings = pa.default_input_stream_settings(CHANNELS, SAMPLE_RATE, FRAMES_PER_BUFFER)?;
-    let callback = move |pa::InputStreamCallbackArgs { buffer, .. }| {
-        let buffer : &[i16] = buffer;
-        match sender.send(buffer) {
-            Ok(_) => portaudio::Continue,
-            Err(_) => portaudio::Complete
-        }
-    };
+fn get_input_stream_parameters(input_index: portaudio::DeviceIndex, latency: f64, channels: i32) -> Result<portaudio::StreamParameters<i16>, String>
+{
+    const INTERLEAVED: bool = true;
+    Ok(portaudio::StreamParameters::<i16>::new(input_index, channels, INTERLEAVED, latency))
+}
 
-    let mut stream = pa.open_non_blocking_stream(settings, callback)?;
-
-    stream.start().expect("Unable to start stream"); 
-    return Ok(stream);
+fn get_input_settings(input_index: portaudio::DeviceIndex, audio_port: &portaudio::PortAudio, sample_rate: f64, frames: u32, channels: i32) -> Result<portaudio::InputStreamSettings<i16>, String>
+{
+    Ok(
+        portaudio::InputStreamSettings::new(
+            (get_input_stream_parameters(
+                input_index,
+                (get_input_latency(
+                    &audio_port,
+                    input_index,
+                ))?,
+                channels
+            ))?,
+            sample_rate,
+            frames,
+        )
+    )
 }
