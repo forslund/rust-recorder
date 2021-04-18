@@ -20,17 +20,18 @@ fn main() {
     const SAMPLE_RATE: f64 = 16_000.0;
     const FRAMES: u32 = 256;
 
-    let audio_port = match open_audio_port() {
+    let pa = match open_audio_port() {
         Ok(port) => port,
         Err(error) => panic!("{}", String::from(error))
     };
 
-    let input_index = match get_input_device_index(&audio_port) {
+    //setup_stream(aud
+    let input_index = match get_input_device_index(&pa) {
         Ok(index) => index,
         Err(error) => panic!("{}", String::from(error))
     };
 
-    let input_settings = match get_input_settings(input_index, &audio_port, SAMPLE_RATE, FRAMES, CHANNELS) {
+    let input_settings = match get_input_settings(input_index, &pa, SAMPLE_RATE, FRAMES, CHANNELS) {
         Ok(settings) => settings,
         Err(error) => panic!("{}", String::from(error))
     };
@@ -44,13 +45,14 @@ fn main() {
     let (sender, receiver) = channel();
 
     let callback = move |portaudio::InputStreamCallbackArgs { buffer, .. }| {
-        sender.send(buffer).unwrap();
+        let _buf = buffer.clone();
+        sender.send(_buf).unwrap();
         portaudio::Continue
     };
 
     // Construct a stream with input and output sample types of i32
-    let mut stream = match audio_port.open_non_blocking_stream(input_settings,
-                                                               callback) {
+    let mut stream = match pa.open_non_blocking_stream(input_settings,
+                                                       callback) {
         Ok(strm) => strm,
         Err(error) => panic!("{}", error.to_string()),
     };
@@ -88,7 +90,7 @@ fn wav_spec(channels: i32, sample_rate: f64) -> hound::WavSpec {
     hound::WavSpec {
         channels: channels as _,
         sample_rate: sample_rate as _,
-        bits_per_sample: (mem::size_of::<i16>() * 8) as _,
+        bits_per_sample: (mem::size_of::<i16>()) as _,
         sample_format: hound::SampleFormat::Int,
     }
 }
